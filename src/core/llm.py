@@ -40,6 +40,26 @@ def build_chat_model(
             temperature=temperature,
             google_api_key=os.getenv("GOOGLE_API_KEY"),
         )
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+        base_url = os.getenv("OPENAI_API_BASE") or os.getenv("LLM_ENDPOINT")
+        return ChatOpenAI(
+            model=model_name or os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            temperature=temperature,
+            api_key=api_key,
+            base_url=base_url,
+        )
+    if provider == "custom":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model_name or os.getenv("CUSTOM_LLM_MODEL"),
+            openai_api_key=os.getenv("CUSTOM_LLM_KEY"),
+            openai_api_base=os.getenv("CUSTOM_LLM_URL"),
+            temperature=temperature,
+        )
     if provider == "ollama":
         from langchain_ollama import ChatOllama
 
@@ -48,7 +68,7 @@ def build_chat_model(
             base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             temperature=temperature,
         )
-    raise ValueError("This lab supports only the `google` and `ollama` providers.")
+    raise ValueError("This lab supports only the `google`, `openai`, `custom`, and `ollama` providers.")
 
 
 def extract_json_object(raw: Any) -> dict[str, Any]:

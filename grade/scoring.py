@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import time
 import sys
 import unicodedata
 from dataclasses import dataclass
@@ -17,6 +18,27 @@ from src.core.llm import judge_answer_with_llm
 
 ALLOWED_WEIGHT_KEYS = {"json_output", "tools", "llm_judge"}
 IGNORED_EXPECTED_KEYS = {"created_at"}
+
+
+def run_with_rate_limit_retry(fn, *, max_attempts: int = 6):
+    attempt = 1
+    while True:
+        try:
+            return fn()
+        except Exception as exc:  # pragma: no cover - defensive runtime wrapper
+            message = str(exc).lower()
+            if "rate limit" not in message and "429" not in message and "rate_limit_exceeded" not in message:
+                raise
+            if attempt >= max_attempts:
+                raise
+            sleep_seconds = min(30, 2**attempt)
+            print(
+                f"[retry] Rate limit detected (attempt {attempt}/{max_attempts}). "
+                f"Sleeping {sleep_seconds}s before retry...",
+                file=sys.stderr,
+            )
+            time.sleep(sleep_seconds)
+            attempt += 1
 
 
 @dataclass
@@ -249,11 +271,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Grade saved JSON output for the order-agent lab")
     parser.add_argument("--module", default="solution.agent.graph")
     parser.add_argument("--cases", default=str(ROOT_DIR / "data" / "graded_cases.json"))
-    parser.add_argument("--provider", default="google", choices=["google", "ollama"])
+    parser.add_argument("--provider", default="google", choices=["google", "openai", "custom", "ollama"])
     parser.add_argument("--model-name", default=None)
     parser.add_argument("--today", default="2026-06-01")
     parser.add_argument("--pass-threshold", type=float, default=80.0)
-    parser.add_argument("--judge-provider", default=None, choices=["google", "ollama"])
+    parser.add_argument("--judge-provider", default=None, choices=["google", "openai", "custom", "ollama"])
     parser.add_argument("--judge-model-name", default=None)
     args = parser.parse_args()
 
@@ -268,24 +290,32 @@ def main() -> int:
 
     scores: list[CaseScore] = []
     for case in cases:
-        raw_result = module.run_agent(
-            case["query"],
-            provider=args.provider,
-            model_name=args.model_name,
-            today=args.today,
+        raw_result = run_with_rate_limit_retry(
+            lambda: module.run_agent(
+                case["query"],
+                provider=args.provider,
+                model_name=args.model_name,
+                today=args.today,
+            )
         )
         result = coerce_result(raw_result, query=case["query"], provider=args.provider, model_name=args.model_name)
         scores.append(
-            grade_result(
-                result,
-                case,
-                judge_provider=effective_judge_provider,
-                judge_model_name=args.judge_model_name,
+            run_with_rate_limit_retry(
+                lambda: grade_result(
+                    result,
+                    case,
+                    judge_provider=effective_judge_provider,
+                    judge_model_name=args.judge_model_name,
+                )
             )
         )
 
     summary = summarize_scores(scores)
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    try:
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+    except UnicodeEncodeError:
+        # Windows terminals may use cp1252 and fail on symbols like "₫".
+        print(json.dumps(summary, indent=2, ensure_ascii=True))
     return 0 if summary["overall_score"] >= args.pass_threshold else 1
 
 
